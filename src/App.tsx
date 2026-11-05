@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Smartphone,
   ShoppingCart,
@@ -35,6 +35,21 @@ import {
   Phone,
   UserCheck,
   UserPlus,
+  Camera,
+  Video,
+  VideoOff,
+  ScanLine,
+  Accessibility,
+  ZoomIn,
+  ZoomOut,
+  Volume2,
+  VolumeX,
+  Sliders,
+  Type,
+  SunMedium,
+  CheckCircle,
+  Radio,
+  Maximize2,
 } from 'lucide-react';
 
 export interface Product {
@@ -61,6 +76,7 @@ export interface StockMovement {
   reason: string;
   responsible: string;
   timestamp: string;
+  capturedByCamera?: boolean;
 }
 
 export interface CartItem {
@@ -165,9 +181,10 @@ const INITIAL_MOVEMENTS: StockMovement[] = [
     quantity: 10,
     previousStock: 14,
     newStock: 24,
-    reason: 'Chegada de pedido de fornecedor local',
+    reason: 'Chegada de fornecedor (conferência câmera #01)',
     responsible: 'admin',
     timestamp: 'Ontem às 16:30',
+    capturedByCamera: true,
   },
   {
     id: 'MOV-1002',
@@ -180,6 +197,7 @@ const INITIAL_MOVEMENTS: StockMovement[] = [
     reason: 'Utilizado em bancada - Orçamento OS #4812',
     responsible: 'admin',
     timestamp: 'Hoje às 10:15',
+    capturedByCamera: false,
   },
 ];
 
@@ -263,7 +281,7 @@ export default function App() {
   const [movementQty, setMovementQty] = useState<number>(1);
   const [movementReason, setMovementReason] = useState<string>('Recebimento de mercadoria');
   const [movementFeedback, setMovementFeedback] = useState<string | null>(null);
-  const [adminTab, setAdminTab] = useState<'movimentacao' | 'catalogo' | 'historico'>('movimentacao');
+  const [adminTab, setAdminTab] = useState<'camera_online' | 'movimentacao' | 'catalogo' | 'historico'>('camera_online');
 
   // Adicionar Novo Produto no Estoque (Admin)
   const [isNewProductModalOpen, setIsNewProductModalOpen] = useState(false);
@@ -276,6 +294,36 @@ export default function App() {
   // Busca na vitrine
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('Todos');
+
+  // ==========================================
+  // ESTADOS DE ACESSIBILIDADE
+  // ==========================================
+  const [isAccessibilityMenuOpen, setIsAccessibilityMenuOpen] = useState(false);
+  const [fontSizeLevel, setFontSizeLevel] = useState<'normal' | 'grande' | 'extra'>('normal');
+  const [isHighContrast, setIsHighContrast] = useState(false);
+  const [isAccessibleFont, setIsAccessibleFont] = useState(false);
+  const [isScreenReaderMode, setIsScreenReaderMode] = useState(false);
+  const [readAloudActive, setReadAloudActive] = useState(false);
+
+  // ==========================================
+  // ESTADOS DA CÂMERA DE MONITORAMENTO DE ESTOQUE (ADMIN)
+  // ==========================================
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraScanTarget, setCameraScanTarget] = useState<number>(1);
+  const [cameraMotionType, setCameraMotionType] = useState<'ENTRADA' | 'SAIDA'>('ENTRADA');
+  const [cameraQuantity, setCameraQuantity] = useState<number>(1);
+  const [isAutoDetecting, setIsAutoDetecting] = useState<boolean>(true);
+  const [lastCameraDetection, setLastCameraDetection] = useState<{
+    time: string;
+    sku: string;
+    name: string;
+    type: 'ENTRADA' | 'SAIDA';
+    qty: number;
+  } | null>(null);
+  const [flashDetected, setFlashDetected] = useState(false);
 
   // Totais do carrinho
   const totalCartCount = useMemo(
@@ -310,6 +358,208 @@ export default function App() {
       currency: 'BRL',
     }).format(val);
 
+  // --- CONTROLE DE ACESSIBILIDADE: LEITOR DE VOZ (SPEECH SYNTHESIS) ---
+  const speakText = (text: string) => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'pt-BR';
+      utterance.rate = 1;
+      utterance.onend = () => setReadAloudActive(false);
+      setReadAloudActive(true);
+      window.speechSynthesis.speak(utterance);
+    } else {
+      alert('Seu navegador não possui suporte para síntese de voz.');
+    }
+  };
+
+  const stopReading = () => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      setReadAloudActive(false);
+    }
+  };
+
+  const readPageSummary = () => {
+    const summary = `Você está na SmartAcessórios São Roque. Assistência Técnica e Acessórios para celulares. Temos ${products.length} itens no estoque disponíveis para entrega ou retirada no centro de São Roque. No topo há o carrinho de compras com ${totalCartCount} itens e botões para login ou orçamento rápido.`;
+    speakText(summary);
+  };
+
+  // --- GERENCIAMENTO DA CÂMERA DE VÍDEO DO ESTOQUE (ADMIN) ---
+  const startCamera = async () => {
+    setCameraError(null);
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setCameraError('Acesso a câmera de vídeo não é suportado pelo seu navegador.');
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+      setCameraStream(stream);
+      setIsCameraActive(true);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {});
+      }
+    } catch (err: any) {
+      console.error('Erro ao acessar câmera:', err);
+      setCameraError('Permissão para a câmera não concedida ou dispositivo ocupado.');
+    }
+  };
+
+  const stopCamera = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((track) => track.stop());
+      setCameraStream(null);
+    }
+    setIsCameraActive(false);
+  };
+
+  // Garante vinculação do stream caso o elemento de vídeo seja montado depois
+  useEffect(() => {
+    if (isCameraActive && cameraStream && videoRef.current) {
+      videoRef.current.srcObject = cameraStream;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [isCameraActive, cameraStream, adminTab]);
+
+  // Limpeza ao desmontar
+  useEffect(() => {
+    return () => {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach((t) => t.stop());
+      }
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, [cameraStream]);
+
+  // Efeito simulador de detecção por visão computacional da câmera ativa
+  useEffect(() => {
+    if (!isCameraActive || !isAutoDetecting) return;
+
+    const interval = setInterval(() => {
+      // Simula uma detecção a cada 18 segundos se o usuário mantiver a câmera ligada
+      const randomProd = products[Math.floor(Math.random() * products.length)];
+      if (!randomProd) return;
+
+      const randomType: 'ENTRADA' | 'SAIDA' = Math.random() > 0.5 ? 'ENTRADA' : 'SAIDA';
+      const qty = 1;
+
+      // Se for saída e tiver estoque zero, pula
+      if (randomType === 'SAIDA' && randomProd.stock <= 0) return;
+
+      const newStock =
+        randomType === 'ENTRADA'
+          ? randomProd.stock + qty
+          : Math.max(0, randomProd.stock - qty);
+
+      setProducts((prev) =>
+        prev.map((p) => (p.id === randomProd.id ? { ...p, stock: newStock } : p))
+      );
+
+      const now = new Date();
+      const timeFormatted = now.toLocaleDateString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+
+      const autoMov: StockMovement = {
+        id: `CAM-${Math.floor(1000 + Math.random() * 9000)}`,
+        productId: randomProd.id,
+        productName: randomProd.name,
+        type: randomType,
+        quantity: qty,
+        previousStock: randomProd.stock,
+        newStock: newStock,
+        reason: `Reconhecimento Óptico de Bancada (Câmera #01 São Roque)`,
+        responsible: 'visão-computacional',
+        timestamp: timeFormatted,
+        capturedByCamera: true,
+      };
+
+      setMovements((prev) => [autoMov, ...prev]);
+      setLastCameraDetection({
+        time: timeFormatted,
+        sku: randomProd.sku,
+        name: randomProd.name,
+        type: randomType,
+        qty: qty,
+      });
+
+      setFlashDetected(true);
+      setTimeout(() => setFlashDetected(false), 800);
+    }, 18000);
+
+    return () => clearInterval(interval);
+  }, [isCameraActive, isAutoDetecting, products]);
+
+  // Registrar leitura manual direta pela mira da câmera
+  const handleCaptureFromCameraManual = () => {
+    const product = products.find((p) => p.id === Number(cameraScanTarget));
+    if (!product) return;
+
+    const qty = Number(cameraQuantity) || 1;
+    if (cameraMotionType === 'SAIDA' && qty > product.stock) {
+      alert(`Erro: Quantidade de saída (${qty}) maior do que o estoque (${product.stock}).`);
+      return;
+    }
+
+    const newStock =
+      cameraMotionType === 'ENTRADA'
+        ? product.stock + qty
+        : Math.max(0, product.stock - qty);
+
+    setProducts((prev) =>
+      prev.map((p) => (p.id === product.id ? { ...p, stock: newStock } : p))
+    );
+
+    const now = new Date();
+    const timeFormatted = now.toLocaleDateString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+
+    const newMov: StockMovement = {
+      id: `CAM-${Math.floor(1000 + Math.random() * 9000)}`,
+      productId: product.id,
+      productName: product.name,
+      type: cameraMotionType,
+      quantity: qty,
+      previousStock: product.stock,
+      newStock: newStock,
+      reason: `Captura via Câmera de Bancada (Operador Admin)`,
+      responsible: 'admin-camera',
+      timestamp: timeFormatted,
+      capturedByCamera: true,
+    };
+
+    setMovements((prev) => [newMov, ...prev]);
+    setLastCameraDetection({
+      time: timeFormatted,
+      sku: product.sku,
+      name: product.name,
+      type: cameraMotionType,
+      qty: qty,
+    });
+
+    setFlashDetected(true);
+    setTimeout(() => setFlashDetected(false), 900);
+  };
+
   // --- HANDLERS DO CARRINHO ---
   const handleAddToCart = (product: Product) => {
     const currentInCart = cart.find((i) => i.product.id === product.id)?.quantity || 0;
@@ -332,6 +582,10 @@ export default function App() {
 
     setAddedProductId(product.id);
     setTimeout(() => setAddedProductId(null), 1200);
+
+    if (isScreenReaderMode) {
+      speakText(`${product.name} adicionado ao carrinho. Total de itens: ${totalCartCount + 1}`);
+    }
   };
 
   const handleRemoveFromCart = (productId: number) => {
@@ -396,6 +650,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    stopCamera();
     setIsAdminLoggedIn(false);
     setCurrentView('loja');
   };
@@ -441,7 +696,6 @@ export default function App() {
       return;
     }
 
-    // Verificar se email já existe
     const exists = registeredCustomers.some(
       (c) => c.email.toLowerCase() === regEmail.toLowerCase()
     );
@@ -495,7 +749,7 @@ export default function App() {
     setLoggedCustomer(null);
   };
 
-  // --- HANDLER DE MOVIMENTAÇÃO DE MATERIAL (ADMIN) ---
+  // --- HANDLER DE MOVIMENTAÇÃO MANUAL DE MATERIAL (ADMIN) ---
   const handleProcessMovement = (e: React.FormEvent) => {
     e.preventDefault();
     const product = products.find((p) => p.id === Number(selectedProductId));
@@ -543,6 +797,7 @@ export default function App() {
       reason: movementReason || 'Movimentação manual pelo administrador',
       responsible: 'admin',
       timestamp: timeFormatted,
+      capturedByCamera: false,
     };
 
     setMovements((prev) => [newMov, ...prev]);
@@ -593,6 +848,7 @@ export default function App() {
         reason: 'Cadastro inicial de material no estoque',
         responsible: 'admin',
         timestamp: 'Agora',
+        capturedByCamera: false,
       };
       setMovements((prev) => [newMov, ...prev]);
     }
@@ -631,6 +887,7 @@ export default function App() {
           reason: `Venda Direta - Cliente: ${loggedCustomer.name} (${loggedCustomer.email})`,
           responsible: 'sistema-venda',
           timestamp: 'Agora',
+          capturedByCamera: false,
         };
         setMovements((prev) => [saleMov, ...prev]);
       }
@@ -642,21 +899,66 @@ export default function App() {
     setCart([]);
   };
 
+  // Classes dinâmicas de acessibilidade
+  const accessibilityRootClasses = [
+    fontSizeLevel === 'grande' ? 'text-lg' : fontSizeLevel === 'extra' ? 'text-xl' : 'text-base',
+    isHighContrast ? 'high-contrast' : '',
+    isAccessibleFont ? 'accessible-font' : '',
+  ].join(' ');
+
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
-      {/* BARRA SUPERIOR DE MODO (CLIENTE VS ADMINISTRADOR) */}
+    <div className={`min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans selection:bg-blue-600 selection:text-white ${accessibilityRootClasses}`}>
+      
+      {/* ================= BARRA SUPERIOR DE ACESSIBILIDADE E MODO ================= */}
       <div className="bg-slate-900 text-slate-200 text-xs py-2 px-4 border-b border-slate-800">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>
-            <span className="hidden sm:inline text-slate-400">
-              Loja & Manutenção em São Roque • SP
-            </span>
-            <span className="sm:hidden font-medium text-slate-300">
-              SmartAcessórios
-            </span>
+        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-2">
+          
+          {/* Lado Esquerdo: Identificação e Atalhos de Acessibilidade Rápidos */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span className="hidden sm:inline text-slate-400">
+                Loja & Manutenção em São Roque • SP
+              </span>
+              <span className="sm:hidden font-medium text-slate-300">
+                SmartAcessórios
+              </span>
+            </div>
+
+            {/* Botão para Abrir Central de Acessibilidade */}
+            <button
+              onClick={() => setIsAccessibilityMenuOpen(!isAccessibilityMenuOpen)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-emerald-300 font-medium transition cursor-pointer border border-emerald-500/30"
+              title="Opções de Acessibilidade (Fonte, Contraste, Leitor de Voz)"
+              aria-label="Opções de Acessibilidade"
+            >
+              <Accessibility className="w-3.5 h-3.5" />
+              <span>Acessibilidade</span>
+            </button>
+
+            {/* Leitor Rápido de Tela */}
+            {readAloudActive ? (
+              <button
+                onClick={stopReading}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-red-600/80 text-white font-medium hover:bg-red-600 transition cursor-pointer"
+                title="Parar leitura de voz"
+              >
+                <VolumeX className="w-3 h-3" />
+                <span className="hidden md:inline">Parar Voz</span>
+              </button>
+            ) : (
+              <button
+                onClick={readPageSummary}
+                className="hidden md:flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
+                title="Ouvir resumo da página em voz alta"
+              >
+                <Volume2 className="w-3 h-3 text-blue-400" />
+                <span>Ouvir Página</span>
+              </button>
+            )}
           </div>
 
+          {/* Lado Direito: Alternância Admin */}
           <div className="flex items-center gap-3">
             {isAdminLoggedIn ? (
               <div className="flex items-center gap-2">
@@ -689,6 +991,114 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* ================= BARRA / PAINEL DE ACESSIBILIDADE EXPANSÍVEL ================= */}
+      {isAccessibilityMenuOpen && (
+        <aside
+          role="region"
+          aria-label="Recursos de Acessibilidade"
+          className="bg-emerald-950 text-white border-b border-emerald-800 py-3 px-4 shadow-md transition"
+        >
+          <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs">
+            <div className="flex items-center gap-2">
+              <Accessibility className="w-5 h-5 text-emerald-400 shrink-0" />
+              <div>
+                <p className="font-bold text-sm text-emerald-200">Central de Acessibilidade e Inclusão</p>
+                <p className="text-[11px] text-emerald-300">
+                  Personalize o tamanho do texto, contraste visual e leitura em áudio.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              {/* Tamanho da Fonte */}
+              <div className="flex items-center gap-1 bg-emerald-900/80 p-1 rounded-xl border border-emerald-700">
+                <span className="text-[11px] font-semibold px-2 text-emerald-200 flex items-center gap-1">
+                  <Type className="w-3.5 h-3.5" /> Texto:
+                </span>
+                <button
+                  onClick={() => setFontSizeLevel('normal')}
+                  className={`px-2 py-1 rounded-lg font-bold transition cursor-pointer ${
+                    fontSizeLevel === 'normal' ? 'bg-emerald-600 text-white' : 'text-emerald-300 hover:bg-emerald-800'
+                  }`}
+                  title="Tamanho Normal"
+                >
+                  A
+                </button>
+                <button
+                  onClick={() => setFontSizeLevel('grande')}
+                  className={`px-2 py-1 rounded-lg font-bold transition cursor-pointer ${
+                    fontSizeLevel === 'grande' ? 'bg-emerald-600 text-white' : 'text-emerald-300 hover:bg-emerald-800'
+                  }`}
+                  title="Texto Grande"
+                >
+                  A+
+                </button>
+                <button
+                  onClick={() => setFontSizeLevel('extra')}
+                  className={`px-2 py-1 rounded-lg font-bold transition cursor-pointer ${
+                    fontSizeLevel === 'extra' ? 'bg-emerald-600 text-white' : 'text-emerald-300 hover:bg-emerald-800'
+                  }`}
+                  title="Texto Extra Grande"
+                >
+                  A++
+                </button>
+              </div>
+
+              {/* Alto Contraste */}
+              <button
+                onClick={() => setIsHighContrast(!isHighContrast)}
+                className={`px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition cursor-pointer border ${
+                  isHighContrast
+                    ? 'bg-yellow-400 text-black border-yellow-300 font-extrabold'
+                    : 'bg-emerald-900/80 hover:bg-emerald-800 text-emerald-200 border-emerald-700'
+                }`}
+                title="Ativar/Desativar Alto Contraste"
+              >
+                <SunMedium className="w-3.5 h-3.5" />
+                Alto Contraste
+              </button>
+
+              {/* Fonte Amigável para Leitura / Dislexia */}
+              <button
+                onClick={() => setIsAccessibleFont(!isAccessibleFont)}
+                className={`px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition cursor-pointer border ${
+                  isAccessibleFont
+                    ? 'bg-white text-emerald-950 border-white'
+                    : 'bg-emerald-900/80 hover:bg-emerald-800 text-emerald-200 border-emerald-700'
+                }`}
+                title="Alternar para fonte com maior espaçamento"
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                Fonte Legível
+              </button>
+
+              {/* Botão de Leitura de Áudio */}
+              <button
+                onClick={readAloudActive ? stopReading : readPageSummary}
+                className={`px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition cursor-pointer border ${
+                  readAloudActive
+                    ? 'bg-red-500 text-white border-red-400 animate-pulse'
+                    : 'bg-blue-600 hover:bg-blue-500 text-white border-blue-500'
+                }`}
+              >
+                {readAloudActive ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                {readAloudActive ? 'Parar Leitura' : 'Ler Tela em Voz Alta'}
+              </button>
+
+              {/* Fechar barra */}
+              <button
+                onClick={() => setIsAccessibilityMenuOpen(false)}
+                className="p-1.5 text-emerald-400 hover:text-white rounded-lg hover:bg-emerald-800 transition cursor-pointer ml-1"
+                title="Fechar barra de acessibilidade"
+                aria-label="Fechar barra de acessibilidade"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </aside>
+      )}
 
       {/* RENDERIZAÇÃO CONDICIONAL: PAINEL ADMIN VS LOJA DO CLIENTE */}
       {currentView === 'admin' ? (
@@ -795,7 +1205,7 @@ export default function App() {
                     </h1>
                   </div>
                   <p className="text-xs sm:text-sm text-slate-500 mt-1">
-                    Entrada e saída de insumos, peças de bancada, acessórios e conferência de estoque.
+                    Entrada e saída de insumos, peças de bancada, acessórios e conferência por câmera ao vivo.
                   </p>
                 </div>
 
@@ -853,8 +1263,20 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Navegação entre Abas do Admin */}
+              {/* Navegação entre Abas do Admin com Nova Aba de Câmera Online */}
               <div className="flex border-b border-slate-200 bg-white px-4 pt-2 rounded-t-xl gap-6 overflow-x-auto">
+                <button
+                  onClick={() => setAdminTab('camera_online')}
+                  className={`pb-3 text-xs sm:text-sm font-semibold flex items-center gap-2 border-b-2 transition cursor-pointer whitespace-nowrap ${
+                    adminTab === 'camera_online'
+                      ? 'border-emerald-600 text-emerald-700'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <Camera className="w-4 h-4 text-emerald-600" />
+                  <span className="font-bold">Acompanhamento por Câmera (Ao Vivo)</span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                </button>
                 <button
                   onClick={() => setAdminTab('movimentacao')}
                   className={`pb-3 text-xs sm:text-sm font-semibold flex items-center gap-2 border-b-2 transition cursor-pointer whitespace-nowrap ${
@@ -864,7 +1286,7 @@ export default function App() {
                   }`}
                 >
                   <RefreshCw className="w-4 h-4" />
-                  Movimentar Material (Entrada / Saída)
+                  Movimentação Manual
                 </button>
                 <button
                   onClick={() => setAdminTab('catalogo')}
@@ -890,7 +1312,263 @@ export default function App() {
                 </button>
               </div>
 
-              {/* CONTEÚDO DA ABA: MOVIMENTAÇÃO */}
+              {/* ================= CONTEÚDO DA ABA: CÂMERA ONLINE (NOVO!) ================= */}
+              {adminTab === 'camera_online' && (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {/* Visor da Câmera ao Vivo */}
+                  <div className="lg:col-span-2 bg-slate-900 rounded-2xl overflow-hidden shadow-lg border border-slate-800 flex flex-col">
+                    {/* Barra de Status do Feed */}
+                    <div className="p-4 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between text-white text-xs">
+                      <div className="flex items-center gap-2.5">
+                        <span className={`w-3 h-3 rounded-full ${isCameraActive ? 'bg-red-500 animate-ping' : 'bg-slate-600'}`}></span>
+                        <span className="font-bold uppercase tracking-wider text-slate-200">
+                          {isCameraActive ? 'Câmera #01 • Bancada São Roque (Ao Vivo)' : 'Câmera Offline'}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {isCameraActive ? (
+                          <button
+                            onClick={stopCamera}
+                            className="px-3 py-1.5 rounded-lg bg-red-600/90 hover:bg-red-600 text-white font-semibold transition cursor-pointer flex items-center gap-1.5"
+                          >
+                            <VideoOff className="w-3.5 h-3.5" />
+                            Desativar Câmera
+                          </button>
+                        ) : (
+                          <button
+                            onClick={startCamera}
+                            className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition cursor-pointer flex items-center gap-1.5 shadow-sm"
+                          >
+                            <Video className="w-3.5 h-3.5" />
+                            Ativar Câmera da Bancada
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Frame do Vídeo com Mira de Escaneamento Óptico */}
+                    <div className="relative aspect-video w-full bg-black flex items-center justify-center overflow-hidden">
+                      {isCameraActive ? (
+                        <>
+                          <video
+                            ref={videoRef}
+                            autoPlay
+                            playsInline
+                            muted
+                            className="w-full h-full object-cover"
+                          />
+                          {/* Grade e Mira de Visão Computacional */}
+                          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                            <div className={`w-64 h-48 sm:w-80 sm:h-56 border-2 rounded-2xl relative transition duration-300 ${
+                              flashDetected ? 'border-emerald-400 bg-emerald-500/20 shadow-2xl shadow-emerald-500' : 'border-emerald-500/70 border-dashed'
+                            }`}>
+                              {/* Mira e linhas de cantos */}
+                              <div className="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-emerald-400"></div>
+                              <div className="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-emerald-400"></div>
+                              <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-emerald-400"></div>
+                              <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-400"></div>
+                              
+                              {/* Linha de Varredura Laser */}
+                              <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent animate-pulse absolute top-1/2 -translate-y-1/2"></div>
+
+                              <span className="absolute top-2 left-3 bg-black/60 text-emerald-300 text-[10px] font-mono px-2 py-0.5 rounded backdrop-blur-xs flex items-center gap-1">
+                                <ScanLine className="w-3 h-3" /> Scanner Óptico Ativo
+                              </span>
+
+                              {flashDetected && (
+                                <div className="absolute bottom-2 inset-x-2 bg-emerald-600 text-white font-bold text-center text-xs py-1 rounded shadow-lg animate-bounce">
+                                  ✓ Movimentação Registrada pela Câmera!
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-center p-6 text-slate-400 space-y-3">
+                          <div className="w-16 h-16 rounded-2xl bg-slate-800 text-slate-400 flex items-center justify-center mx-auto border border-slate-700">
+                            <Camera className="w-8 h-8 stroke-[1.4]" />
+                          </div>
+                          <div>
+                            <p className="text-slate-200 font-bold text-base">Câmera de Monitoramento Desligada</p>
+                            <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                              Ative a câmera para monitorar em tempo real a entrada e saída de peças, cabos e telas na bancada de São Roque.
+                            </p>
+                          </div>
+                          <button
+                            onClick={startCamera}
+                            className="mt-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition cursor-pointer shadow-md shadow-emerald-600/30 inline-flex items-center gap-2"
+                          >
+                            <Video className="w-4 h-4" />
+                            Ligar Monitoramento por Câmera
+                          </button>
+                        </div>
+                      )}
+
+                      {cameraError && (
+                        <div className="absolute bottom-4 left-4 right-4 bg-red-900/90 text-white p-3 rounded-xl text-xs flex items-center gap-2 border border-red-700">
+                          <AlertTriangle className="w-4 h-4 shrink-0 text-red-300" />
+                          <span>{cameraError} (Utilize a captura manual ou simulação assistida abaixo).</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Controles de Leitura Rápida com Câmera */}
+                    <div className="p-4 sm:p-5 bg-slate-900 border-t border-slate-800 space-y-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-300">
+                        <div className="flex items-center gap-2">
+                          <ScanLine className="w-4 h-4 text-emerald-400" />
+                          <span className="font-semibold text-white">Disparo Rápido de Registro pela Câmera:</span>
+                        </div>
+                        <label className="flex items-center gap-2 cursor-pointer text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={isAutoDetecting}
+                            onChange={(e) => setIsAutoDetecting(e.target.checked)}
+                            className="rounded text-emerald-500 focus:ring-emerald-400"
+                          />
+                          <span>Detecção contínua inteligente ativa</span>
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                        <div className="sm:col-span-2">
+                          <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                            Material em Foco na Câmera
+                          </label>
+                          <select
+                            value={cameraScanTarget}
+                            onChange={(e) => setCameraScanTarget(Number(e.target.value))}
+                            className="w-full p-2.5 rounded-xl bg-slate-800 border border-slate-700 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                          >
+                            {products.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                [{p.sku}] {p.name} (Atual: {p.stock} un)
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                            Tipo de Movimento
+                          </label>
+                          <select
+                            value={cameraMotionType}
+                            onChange={(e) => setCameraMotionType(e.target.value as any)}
+                            className="w-full p-2.5 rounded-xl bg-slate-800 border border-slate-700 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                          >
+                            <option value="ENTRADA">ENTRADA (+) Chegada</option>
+                            <option value="SAIDA">SAÍDA (-) Bancada/Venda</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                            Qtd na Mira
+                          </label>
+                          <div className="flex gap-2">
+                            <input
+                              type="number"
+                              min="1"
+                              value={cameraQuantity}
+                              onChange={(e) => setCameraQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                              className="w-full p-2.5 rounded-xl bg-slate-800 border border-slate-700 text-xs text-white text-center font-bold"
+                            />
+                            <button
+                              onClick={handleCaptureFromCameraManual}
+                              className="px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center shrink-0 shadow-md"
+                              title="Capturar e atualizar estoque"
+                            >
+                              <Check className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Painel Lateral: Última Detecção e Logs Capturados pela Câmera */}
+                  <div className="space-y-4">
+                    {/* Cartão de Última Captura */}
+                    <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                          Última Captura Óptica
+                        </span>
+                        <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
+                          <Radio className="w-3 h-3 text-emerald-500 animate-pulse" /> Sincronizado
+                        </span>
+                      </div>
+
+                      {lastCameraDetection ? (
+                        <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono text-[10px] text-blue-600 font-bold">
+                              {lastCameraDetection.sku}
+                            </span>
+                            <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                              lastCameraDetection.type === 'ENTRADA' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {lastCameraDetection.type} ({lastCameraDetection.qty} un)
+                            </span>
+                          </div>
+                          <p className="font-bold text-slate-900 text-sm">{lastCameraDetection.name}</p>
+                          <p className="text-slate-400 text-[11px] pt-1">
+                            Capturado às: {lastCameraDetection.time}
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-400 italic">
+                          Nenhuma movimentação por câmera registrada nesta sessão ainda.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Resumo Rápido de Registros Ópticos */}
+                    <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+                      <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                        <Camera className="w-4 h-4 text-emerald-600" />
+                        Histórico por Câmera / Visão Óptica
+                      </h4>
+
+                      <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                        {movements.filter((m) => m.capturedByCamera).length === 0 ? (
+                          <p className="text-xs text-slate-400">Nenhum evento registrado pela câmera.</p>
+                        ) : (
+                          movements
+                            .filter((m) => m.capturedByCamera)
+                            .slice(0, 5)
+                            .map((mov) => (
+                              <div
+                                key={mov.id}
+                                className="p-2.5 rounded-xl border border-slate-100 bg-slate-50 text-xs flex items-center justify-between"
+                              >
+                                <div>
+                                  <p className="font-semibold text-slate-900 truncate max-w-[160px]">
+                                    {mov.productName}
+                                  </p>
+                                  <p className="text-[10px] text-slate-400">{mov.timestamp}</p>
+                                </div>
+                                <span
+                                  className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                                    mov.type === 'ENTRADA'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : 'bg-red-100 text-red-800'
+                                  }`}
+                                >
+                                  {mov.type === 'ENTRADA' ? '+' : '-'}{mov.quantity} un
+                                </span>
+                              </div>
+                            ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* CONTEÚDO DA ABA: MOVIMENTAÇÃO MANUAL */}
               {adminTab === 'movimentacao' && (
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   {/* Formulário de Lançamento */}
@@ -1192,6 +1870,11 @@ export default function App() {
                               >
                                 {mov.type} ({mov.quantity} un)
                               </span>
+                              {mov.capturedByCamera && (
+                                <span className="bg-slate-900 text-emerald-300 px-2 py-0.5 rounded text-[10px] font-mono flex items-center gap-1">
+                                  <Camera className="w-2.5 h-2.5" /> Câmera Óptica
+                                </span>
+                              )}
                             </div>
                             <p className="text-slate-600 mt-0.5">{mov.reason}</p>
                             <p className="text-[11px] text-slate-400 mt-1">
@@ -1256,8 +1939,18 @@ export default function App() {
                 </a>
               </nav>
 
-              {/* Ações: Perfil/Cadastro do Cliente, Compra Rápida e Carrinho */}
-              <div className="flex items-center gap-2.5">
+              {/* Ações: Acessibilidade, Perfil/Cadastro do Cliente, Compra Rápida e Carrinho */}
+              <div className="flex items-center gap-2">
+                {/* Botão de Atalho para Acessibilidade */}
+                <button
+                  onClick={() => setIsAccessibilityMenuOpen(!isAccessibilityMenuOpen)}
+                  className="p-2 text-slate-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-xl transition cursor-pointer border border-slate-200"
+                  title="Abrir Central de Acessibilidade"
+                  aria-label="Abrir opções de acessibilidade"
+                >
+                  <Accessibility className="w-4 h-4 text-emerald-600" />
+                </button>
+
                 {/* Botão de Cadastro / Conta do Cliente */}
                 {loggedCustomer ? (
                   <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 py-1 px-2.5 rounded-xl text-xs">
@@ -1346,7 +2039,7 @@ export default function App() {
 
               <p className="mt-5 text-base sm:text-lg text-slate-600 max-w-2xl mx-auto leading-relaxed">
                 Reparo rápido de telas e baterias, películas de alta durabilidade e acessórios originais.
-                Cadastre-se rapidamente com e-mail, senha e telefone para fazer suas compras!
+                Estoque 100% integrado com controle óptico por câmera em tempo real!
               </p>
 
               {/* Botões de Ação */}
@@ -1790,12 +2483,18 @@ export default function App() {
                 <p className="text-slate-400 leading-relaxed">
                   Assistência técnica especializada em São Roque com peças originais e controle inteligente de material.
                 </p>
-                <div className="mt-4">
+                <div className="mt-4 flex flex-col gap-1.5">
                   <button
                     onClick={() => setCurrentView('admin')}
-                    className="text-xs text-blue-400 hover:text-blue-300 underline font-medium cursor-pointer"
+                    className="text-xs text-blue-400 hover:text-blue-300 underline font-medium cursor-pointer text-left"
                   >
-                    Área Restrita (Administrador)
+                    Área Restrita (Administrador & Câmera)
+                  </button>
+                  <button
+                    onClick={() => setIsAccessibilityMenuOpen(true)}
+                    className="text-xs text-emerald-400 hover:text-emerald-300 underline font-medium cursor-pointer text-left"
+                  >
+                    Opções de Acessibilidade
                   </button>
                 </div>
               </div>

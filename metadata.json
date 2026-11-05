@@ -1,6 +1,8 @@
 {
   "name": "SmartAcessórios - Assistência & Acessórios",
   "description": "Assistência técnica e acessórios para celulares em São Roque. Produtos de alta qualidade, reparos rápidos e orçamento online.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "camera"
+  ],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

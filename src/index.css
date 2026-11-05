@@ -1,1 +1,26 @@
 @import "tailwindcss";
+
+/* Suporte à Acessibilidade: Alto Contraste */
+.high-contrast {
+  filter: contrast(125%);
+}
+
+.high-contrast input,
+.high-contrast select,
+.high-contrast button {
+  border-width: 2px !important;
+}
+
+/* Modo Fonte Legível / Dislexia */
+.accessible-font {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  letter-spacing: 0.03em !important;
+  word-spacing: 0.05em !important;
+}
+
+/* Animações Reduzidas */
+.reduce-motion * {
+  animation-duration: 0.001s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001s !important;
+}
